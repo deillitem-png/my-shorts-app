@@ -3,7 +3,6 @@ import os
 import datetime
 import time
 from google import genai
-from google.genai import types
 from googleapiclient.discovery import build
 from PIL import Image
 
@@ -143,20 +142,20 @@ with st.sidebar:
 product_name = st.text_input("📦 상품명 또는 키워드를 입력하세요", placeholder="예: 야채 탈수기, 마늘다지기, 샤워메이트 바디워시")
 product_features = st.text_area("✨ 상품 핵심 특징 및 장점 (글로 직접 입력 시)", placeholder="예: 무선 충전, 강력한 탈수 능력, 내구성 우수, 간편한 세척")
 
-# 📸 이미지 여러 장 업로드 기능 추가
+# 📸 이미지 여러 장 업로드 기능
 uploaded_files = st.file_uploader(
     "📷 상품 설명 또는 캡처 이미지 첨부 (여러 장 선택 가능)", 
     type=["png", "jpg", "jpeg", "webp"], 
     accept_multiple_files=True
 )
 
-# 업로드된 이미지 미리보기 표시
+# 업로드된 이미지 미리보기 표시 (오류 해결 완료)
 if uploaded_files:
     st.write(f"첨부된 이미지: 총 {len(uploaded_files)}장")
-    cols = st.imagerows if hasattr(st, "imagerows") else st.columns(min(len(uploaded_files), 4))
+    cols = st.columns(min(len(uploaded_files), 4))
     for idx, file in enumerate(uploaded_files):
         with cols[idx % len(cols)]:
-            st.image(file, caption=f"이미지 {idx+1}", use_column_width=True)
+            st.image(file, caption=f"이미지 {idx+1}", use_container_width=True)
 
 if st.button("🚀 이미지 분석 & 32초 대본 생성하기", type="primary", use_container_width=True):
     if not product_name:
@@ -190,7 +189,6 @@ if st.button("🚀 이미지 분석 & 32초 대본 생성하기", type="primary"
         with st.spinner("첨부된 이미지와 떡상 패턴을 종합하여 32초 대본을 짜는 중입니다..."):
             prompt_contents = []
             
-            # 첨부된 이미지가 있다면 프롬프트 리스트에 추가
             if pil_images:
                 prompt_contents.extend(pil_images)
 
