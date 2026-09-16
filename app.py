@@ -1,115 +1,106 @@
+import streamlit as st
+import os
 import datetime
 import time
-import streamlit as st
-import google.genai as genai
-from googleapiclient.discovery import build
+from google import genai
 
-# 웹 앱 제목 설정
-st.set_page_config(page_title="식품 쇼츠 콘티 생성기", layout="centered")
+# Page Config
+st.set_page_config(page_title="푸드/쇼핑 숏폼 대본 생성기", page_icon="🎬", layout="wide")
 
-st.title("🎬 32초 식품 쇼츠 콘티 생성기")
-st.caption("쿠팡 파트너스 식품 전용 32초 마크다운 표 콘티 생성 앱")
+# =========================================================
+# 1. Secrets에서 비밀번호 및 API 키 불러오기
+# =========================================================
+app_password = st.secrets.get("APP_PASSWORD", "")
+gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+youtube_key = st.secrets.get("YOUTUBE_API_KEY", "")
 
-# 사이드바 API 키 입력
+# =========================================================
+# 2. 비밀번호 잠금 (인증 화면)
+# =========================================================
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.title("🔒 비밀번호를 입력하세요")
+    st.caption("허가된 사용자만 접근할 수 있는 숏폼 대본 생성기입니다.")
+    user_input_pw = st.text_input("접속 비밀번호", type="password")
+    
+    if st.button("로그인", use_container_width=True):
+        if app_password and user_input_pw == app_password:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("비밀번호가 일치하지 않거나 Secrets 설정이 완료되지 않았습니다.")
+    st.stop()  # 🛑 비밀번호 통과 전까지는 메인 기능을 절대 실행하지 않음
+
+# =========================================================
+# 3. 메인 앱 실행 (비밀번호 통과 후)
+# =========================================================
+st.title("🎬 쇼핑 숏폼 대본 & 콘티 자동 생성기")
+st.caption("Gemini 3.6 Flash 모델 기반 숏폼 기획 툴")
+
+# Gemini API 클라이언트 초기화
+if not gemini_key:
+    st.error("Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않았습니다. Secrets를 먼저 확인해주세요.")
+    st.stop()
+
+client = genai.Client(api_key=gemini_key)
+
+# 사이드바 입력 설정
 with st.sidebar:
-    st.header("🔑 API 키 설정")
-    gemini_key = st.text_input("Gemini API Key", type="password")
-    youtube_key = st.text_input("YouTube API Key", type="password")
+    st.header("⚙️ 생성 옵션")
+    pattern = st.selectbox(
+        "기획 패턴 선택",
+        [
+            "패턴 A: 훅 중심 (강렬한 문제 제기 + 빠른 해결)",
+            "패턴 B: 정보 전달형 (꿀팁 3가지 + 추천)",
+            "패턴 C: 비교 분석형 (기존 제품 vs 해당 제품)",
+            "패턴 D: 공감/상황극형 (일상 불편함 극복)"
+        ]
+    )
+    video_length = st.radio("영상 길이 Target", ["15초 (초고속 훅)", "30초 (표준 숏폼)", "60초 (상세 정보)"])
+    st.divider()
+    st.info("🔓 Secrets에 설정된 API 키로 자동 연동되어 동작 중입니다.")
 
-# 메인 입력창
-product_name = st.text_input("쿠팡 상품명을 입력하세요", placeholder="예: 활꽃게, 알룰로스, 닭가슴살")
+# 메인 입력 폼
+product_name = st.text_input("📦 상품명 또는 키워드를 입력하세요", placeholder="예: 야채 탈수기, 마늘다지기, 샤워메이트 바디워시")
+product_features = st.text_area("✨ 상품 핵심 특징 및 장점 (선택사항)", placeholder="예: 무선 충전, 강력한 탈수 능력, 내구성 우수, 간편한 세척")
 
-if st.button("🔥 32초 콘티 생성하기", type="primary", use_container_width=True):
-    if not gemini_key or not youtube_key:
-        st.warning("왼쪽 사이드바에 Gemini 및 YouTube API 키를 입력해 주세요.")
-    elif not product_name:
-        st.warning("상품명을 입력해 주세요.")
+if st.button("🚀 숏폼 대본 및 콘티 생성하기", type="primary", use_container_width=True):
+    if not product_name:
+        st.warning("상품명을 입력해주세요!")
     else:
-        with st.spinner("유튜브 인기 트렌드 분석 및 식품 콘티 생성 중..."):
-            try:
-                # 1. 유튜브 인기 트렌드 추출
-                youtube = build("youtube", "v3", developerKey=youtube_key)
-                seven_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat() + "Z"
-                
-                search_response = youtube.search().list(
-                    q="쿠팡추천식품 #shorts",
-                    part="id,snippet",
-                    maxResults=5,
-                    type="video",
-                    videoDuration="short",
-                    publishedAfter=seven_days_ago,
-                    order="viewCount"
-                ).execute()
+        with st.spinner("최적의 숏폼 훅과 장면 콘티를 생성 중입니다..."):
+            prompt = f"""
+            너는 대한민국 최고의 YouTube Shorts / TikTok 쇼핑 숏폼 전문 기획자이자 카피라이터이다.
+            아래 정보를 바탕으로 시청자의 시선을 사로잡는 숏폼 대본 및 장면별 상세 콘티를 작성하라.
 
-                video_ids = [item['id']['videoId'] for item in search_response.get('items', [])]
-                pattern = "문제해결/비포애프터"
-                
-                if video_ids:
-                    stats_response = youtube.videos().list(
-                        part="snippet,statistics",
-                        id=",".join(video_ids)
-                    ).execute()
-                    
-                    patterns = {
-                        "가격/가성비": ["가성비", "원대", "반값", "할인"],
-                        "문제해결/비포애프터": ["이거", "청소", "정리", "해결", "식단"],
-                        "비교/추천": ["TOP", "3가지", "추천", "비교", "필수"]
-                    }
-                    score_board = {"가격/가성비": 0, "문제해결/비포애프터": 0, "비교/추천": 0}
-                    
-                    for item in stats_response.get('items', []):
-                        title = item['snippet']['title']
-                        for cat, words in patterns.items():
-                            if any(w in title for w in words):
-                                score_board[cat] += 1
-                    pattern = max(score_board, key=score_board.get)
+            [상품 정보]
+            - 상품명: {product_name}
+            - 특징/소개: {product_features if product_features else '입력 안됨 (상품명 기반 분석하여 작성)'}
+            - 적용 패턴: {pattern}
+            - 목표 길이: {video_length}
 
-                # 2. 제미나이 식품 전용 콘티 생성
-                client = genai.Client(api_key=gemini_key)
-                prompt = f"""
-                [경고: 모든 답변은 100% 한국어로만 작성하세요. 서론이나 인삿말 없이 바로 마크다운 결과물만 출력하세요.]
+            [작성 가이드라인]
+            1. 첫 3초 안에 시청자 이탈을 막을 수 있는 강렬한 시각적/후각적/상황적 '훅(Hook)' 멘트 필수 포함.
+            2. 화면 해설(영상 구성/컷 전환)과 나레이션(대사)을 1:1로 매칭하여 보기 쉽게 테이블 또는 구분된 리스트 형태로 제시할 것.
+            3. 쿠팡 파트너스/쇼핑 숏폼 성격에 맞게 구매 욕구를 자극하는 자연스러운 CTA(Call To Action / 프로필 링크 유도) 포함할 것.
+            4. 숏폼 영상 제작에 바로 활용할 수 있는 추천 BGM 분위기와 텍스트 자막 위치 팁도 함께 제시할 것.
+            """
 
-                당신은 한국 유튜브 쿠팡 파트너스 식품(Food) 쇼츠 전문 기획자입니다.
-                상품명: {product_name}
-                분석된 트렌드 패턴: {pattern}
-
-                [식품 전용 변환 규칙]
-                분석된 패턴이 타 카테고리이더라도, 반드시 아래 연출로 100% 재해석하여 대본을 작성하세요.
-                - 비주얼 연출 ➔ 조리 장면, 김이 모락모락 나는 비주얼, 치즈 늘어남, 육즙/윤기 클로즈업(Sizzle)
-                - 비포&애프터 ➔ 배달비 4천원 내고 기다리기 vs 5분 만에 집에서 고퀄리티 완성 / 설탕 폭탄 vs 칼로리 싹 뺀 대체식
-                - 식감 연출 ➔ 바삭함(ASMR), 쫀득함, 부드러운 식감 강조
-
-                [필수 출력 양식]
-                ---
-                ### 📌 썸네일 설정
-                - **배경 구도:** (군침 도는 음식 클로즈업 또는 가성비/비교 반반 구도)
-                - **강렬한 노란색 문구 (3~5자):** (시선을 사로잡는 문구)
-
-                ### 🎬 32초 식품 쇼츠 콘티 폼
-                | 구분 | 타임코드 | 역할 | 나레이션 (음성) | 시각 연출 및 자막 |
-                | :--- | :--- | :--- | :--- | :--- |
-                | 1구간 | 0~8초 | 훅 & 문제 제기 | (강렬한 훅 나레이션) | **[시각]** (지글지글 조리/치즈/육즙 등 극강의 씨즐 컷)<br>**[자막]** (3~6자 자막) |
-                | 2구간 | 8~16초 | 핵심 소구점 1 | (첫 번째 해결책 나레이션) | **[시각]** (조리 과정 또는 비교 연출)<br>**[자막]** (핵심 자막) |
-                | 3구간 | 16~24초 | 핵심 소구점 2 | (두 번째 해결책 나레이션) | **[시각]** (ASMR/단면 연출)<br>**[자막]** (핵심 자막) |
-                | 4구간 | 24~32초 | 구매 유도 & 마무리 | (댓글창 확인 유도 멘트) | **[시각]** (완성 접시 & 댓글창 가리키는 화살표)<br>**[자막]** (👇 고정 댓글 클릭!) |
-
-                [주의사항]
-                - 4구간 구매 유도는 오직 '댓글창 고정 링크' 또는 '관련 영상' 유도 멘트로만 작성하세요.
-                """
-
-                for attempt in range(3):
-                    try:
-                        response = client.models.generate_content(
-                            model='gemini-3.6-flash',
-                            contents=prompt
-                        )
-                        st.success(f"적용된 패턴: [{pattern}]")
-                        st.markdown(response.text)
+            # 503 에러 대비 재시도 로직 포함 (최대 3회)
+            for attempt in range(3):
+                try:
+                    response = client.models.generate_content(
+                        model='gemini-3.6-flash',
+                        contents=prompt
+                    )
+                    st.success(f"✅ 대본 생성 완료! (적용 패턴: {pattern})")
+                    st.markdown(response.text)
+                    break
+                except Exception as e:
+                    if "503" in str(e) and attempt < 2:
+                        time.sleep(2)
+                    else:
+                        st.error(f"오류가 발생했습니다. 잠시 후 다시 시도해 주세요: {e}")
                         break
-                    except Exception as e:
-                        if "503" in str(e) and attempt < 2:
-                            time.sleep(2)
-                        else:
-                            raise e
-            except Exception as e:
-                st.error(f"오류가 발생했습니다: {e}")
