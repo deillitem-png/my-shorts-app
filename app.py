@@ -3,6 +3,7 @@ import os
 import datetime
 import time
 from google import genai
+from googleapiclient.discovery import build
 
 # Page Config
 st.set_page_config(page_title="푸드/쇼핑 숏폼 대본 생성기", page_icon="🎬", layout="wide")
@@ -34,10 +35,88 @@ if not st.session_state.authenticated:
     st.stop()  # 🛑 비밀번호 통과 전까지는 메인 기능을 절대 실행하지 않음
 
 # =========================================================
-# 3. 메인 앱 실행 (비밀번호 통과 후)
+# 3. YouTube API 분석 함수 (구독자 대비 조회수 500%+ 추출)
 # =========================================================
-st.title("🎬 쇼핑 숏폼 대본 & 콘티 자동 생성기")
-st.caption("Gemini 3.6 Flash 모델 기반 숏폼 기획 툴")
+def fetch_top_performing_shorts(keyword, api_key):
+    if not api_key:
+        return []
+    
+    try:
+        youtube = build('youtube', 'v3', developerKey=api_key)
+        
+        # 최근 7일 날짜 계산 (ISO 8601)
+        one_week_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat() + "Z"
+        
+        # 1. 키워드 관련 숏폼 영상 검색 (#shorts 포함)
+        search_response = youtube.search().list(
+            q=f"{keyword} #shorts",
+            part='id,snippet',
+            maxResults=50,
+            order='viewCount',
+            publishedAfter=one_week_ago,
+            type='video',
+            videoDuration='short'
+        ).execute()
+
+        video_ids = [item['id']['videoId'] for item in search_response.get('items', [])]
+        if not video_ids:
+            return []
+
+        # 2. 영상 세부 정보 (조회수) 가져오기
+        videos_response = youtube.videos().list(
+            id=','.join(video_ids),
+            part='snippet,statistics'
+        ).execute()
+
+        channel_ids = list(set([item['snippet']['channelId'] for item in videos_response.get('items', [])]))
+        
+        # 3. 채널 구독자 수 가져오기 (100개 단위 묶음)
+        channel_subscribers = {}
+        for i in range(0, len(channel_ids), 50):
+            chunk = channel_ids[i:i+50]
+            channels_response = youtube.channels().list(
+                id=','.join(chunk),
+                part='statistics'
+            ).execute()
+            for ch in channels_response.get('items', []):
+                sub_count = int(ch['statistics'].get('subscriberCount', 1))
+                # 구독자 비공개이거나 0명인 경우 최소 1명 처리
+                channel_subscribers[ch['id']] = max(sub_count, 1)
+
+        analyzed_videos = []
+        for item in videos_response.get('items', []):
+            title = item['snippet']['title']
+            video_id = item['id']
+            views = int(item['statistics'].get('viewCount', 0))
+            ch_id = item['snippet']['channelId']
+            subs = channel_subscribers.get(ch_id, 1)
+
+            # 구독자 대비 조회수 비율 계산 (%)
+            ratio = (views / subs) * 100
+
+            # 500% 이상 떡상 영상만 필터링
+            if ratio >= 500:
+                analyzed_videos.append({
+                    'title': title,
+                    'url': f"https://www.youtube.com/shorts/{video_id}",
+                    'views': views,
+                    'subs': subs,
+                    'ratio': round(ratio, 1)
+                })
+
+        # 비율(성과) 순으로 정렬 후 상위 50개 확정
+        analyzed_videos = sorted(analyzed_videos, key=lambda x: x['ratio'], reverse=True)[:50]
+        return analyzed_videos
+
+    except Exception as e:
+        st.warning(f"YouTube 분석 데이터를 불러오는 중 오류 발생: {e}")
+        return []
+
+# =========================================================
+# 4. 메인 앱 실행 (비밀번호 통과 후)
+# =========================================================
+st.title("🎬 쇼핑 숏폼 대본 생성기 (떡상 데이터 분석형)")
+st.caption("Gemini 3.6 Flash & YouTube Data API 연동 | 최근 7일 떡상 패턴 분석 기반")
 
 # Gemini API 클라이언트 초기화
 if not gemini_key:
@@ -48,44 +127,79 @@ client = genai.Client(api_key=gemini_key)
 
 # 사이드바 입력 설정
 with st.sidebar:
-    st.header("⚙️ 생성 옵션")
+    st.header("⚙️ 기획 옵션")
     pattern = st.selectbox(
         "기획 패턴 선택",
         [
             "패턴 A: 훅 중심 (강렬한 문제 제기 + 빠른 해결)",
-            "패턴 B: 정보 전달형 (꿀팁 3가지 + 추천)",
+            "패턴 B: 정보 전달형 (핵심 특징 2가지 + 추천)",
             "패턴 C: 비교 분석형 (기존 제품 vs 해당 제품)",
             "패턴 D: 공감/상황극형 (일상 불편함 극복)"
         ]
     )
-    video_length = st.radio("영상 길이 Target", ["15초 (초고속 훅)", "30초 (표준 숏폼)", "60초 (상세 정보)"])
     st.divider()
-    st.info("🔓 Secrets에 설정된 API 키로 자동 연동되어 동작 중입니다.")
+    st.info("⏱️ **영상 구성 고정**\n8초 x 4개 씬 = 총 32초 타이트 대본")
+    st.info("📊 **실시간 분석 연동**\n최근 7일간 구독자 대비 조회수 500%+ 떡상 영상 분석 반영")
 
 # 메인 입력 폼
 product_name = st.text_input("📦 상품명 또는 키워드를 입력하세요", placeholder="예: 야채 탈수기, 마늘다지기, 샤워메이트 바디워시")
 product_features = st.text_area("✨ 상품 핵심 특징 및 장점 (선택사항)", placeholder="예: 무선 충전, 강력한 탈수 능력, 내구성 우수, 간편한 세척")
 
-if st.button("🚀 숏폼 대본 및 콘티 생성하기", type="primary", use_container_width=True):
+if st.button("🚀 떡상 분석 & 32초 대본 생성하기", type="primary", use_container_width=True):
     if not product_name:
         st.warning("상품명을 입력해주세요!")
     else:
-        with st.spinner("최적의 숏폼 훅과 장면 콘티를 생성 중입니다..."):
+        with st.spinner("최근 7일간 구독자 대비 조회수 500% 이상 떡상한 영상 상위 50개를 분석 중입니다..."):
+            top_videos = fetch_top_performing_shorts(product_name, youtube_key)
+
+        # 1. 떡상 영상 상위 10개 화면 리스트 표출
+        st.subheader("🔥 최근 1주일 키워드 떡상 영상 Top 10 (구독자 대비 조회수 500%+)")
+        if top_videos:
+            top_10 = top_videos[:10]
+            for idx, vid in enumerate(top_10, 1):
+                st.write(f"**{idx}. [{vid['title']}]({vid['url']})** — 조회수: {vid['views']:,}회 / 구독자: {vid['subs']:,}명 (**성과: {vid['ratio']}%**) ")
+        else:
+            st.info("최근 7일 내 조건(구독자 대비 조회수 500% 이상)에 맞는 영상을 찾지 못해 일반 최적화 알고리즘 기반으로 대본을 작성합니다.")
+
+        # 2. 상위 50위 분석 데이터 텍스트 구성 (AI 입력용)
+        analysis_context = ""
+        if top_videos:
+            analysis_context = "다음은 최근 1주일간 해당 키워드로 구독자 대비 조회수 500% 이상을 기록한 상위 떡상 영상들의 제목 리스트이다:\n"
+            for v in top_videos:
+                analysis_context += f"- {v['title']} (성과: {v['ratio']}%)\n"
+
+        # 3. Gemini 대본 생성 요청
+        with st.spinner("상위 떡상 영상 50개의 제목과 훅 패턴을 분석하여 32초 대본을 짜는 중입니다..."):
             prompt = f"""
             너는 대한민국 최고의 YouTube Shorts / TikTok 쇼핑 숏폼 전문 기획자이자 카피라이터이다.
-            아래 정보를 바탕으로 시청자의 시선을 사로잡는 숏폼 대본 및 장면별 상세 콘티를 작성하라.
+
+            [실시간 떡상 영상 데이터 분석]
+            {analysis_context if analysis_context else '최근 떡상 데이터 없음'}
+
+            위의 최근 떡상 영상 50개의 제목 패터닝 및 시청자 반응 요인을 분석하여, 
+            아래 상품을 위한 가장 트렌디하고 높은 클릭/시청지속률을 기록할 32초 대본을 작성하라.
 
             [상품 정보]
             - 상품명: {product_name}
             - 특징/소개: {product_features if product_features else '입력 안됨 (상품명 기반 분석하여 작성)'}
             - 적용 패턴: {pattern}
-            - 목표 길이: {video_length}
 
-            [작성 가이드라인]
-            1. 첫 3초 안에 시청자 이탈을 막을 수 있는 강렬한 시각적/후각적/상황적 '훅(Hook)' 멘트 필수 포함.
-            2. 화면 해설(영상 구성/컷 전환)과 나레이션(대사)을 1:1로 매칭하여 보기 쉽게 테이블 또는 구분된 리스트 형태로 제시할 것.
-            3. 쿠팡 파트너스/쇼핑 숏폼 성격에 맞게 구매 욕구를 자극하는 자연스러운 CTA(Call To Action / 프로필 링크 유도) 포함할 것.
-            4. 숏폼 영상 제작에 바로 활용할 수 있는 추천 BGM 분위기와 텍스트 자막 위치 팁도 함께 제시할 것.
+            [대본 필수 구성 조건 (엄격 준수)]
+            총 32초 영상이며, 정확히 8초씩 분량 분배된 총 4개의 씬(Scene)으로 구성할 것.
+
+            - **Scene 1 (0초~8초)**: [시각적/상황적 훅] 분석된 떡상 영상들의 훅을 참고하여 시청자 이탈을 막는 강렬한 첫 3초 훅 + 문제 제기
+            - **Scene 2 (8초~16초)**: [핵심 해결책 제시] 상품 등장 및 가장 강력한 1번 핵심 특징/기능 연출
+            - **Scene 3 (16초~24초)**: [실사용 체감 및 디테일] 사용 편의성, 세척/보관 등 2번 핵심 특징 및 비포/애프터 연출
+            - **Scene 4 (24초~32초)**: [구매 유도 CTA] 혜택/결론 정리 + 프로필 링크/댓글 구매 유도 멘트
+
+            [작성 형식]
+            1. **[상위 50위 떡상 영상 종합 분석 요약]**: 어떤 제목 구조와 훅이 최근 반응이 좋았는지 2~3줄로 분석 요약할 것.
+            2. 각 Scene별 마크다운 테이블 또는 구조화된 표기:
+               - 씬 번호 및 타임코드 (예: Scene 1 [00:00~00:08])
+               - 화면 해설 (어떤 영상 화면과 컷 전환이 들어가는지)
+               - 나레이션/대사 (8초 동안 말할 수 있는 타이트한 글자 수)
+               - 자막 텍스트 (화면에 크게 띄울 키워드)
+            3. 마지막에 추천 BGM 분위기 1줄 정리.
             """
 
             # 503 에러 대비 재시도 로직 포함 (최대 3회)
@@ -95,7 +209,8 @@ if st.button("🚀 숏폼 대본 및 콘티 생성하기", type="primary", use_c
                         model='gemini-3.6-flash',
                         contents=prompt
                     )
-                    st.success(f"✅ 대본 생성 완료! (적용 패턴: {pattern})")
+                    st.divider()
+                    st.success(f"✅ 떡상 패턴 분석 기반 32초 대본 생성 완료! (적용 패턴: {pattern})")
                     st.markdown(response.text)
                     break
                 except Exception as e:
